@@ -1,0 +1,16 @@
+{
+  "name": "Snagr",
+  "short_name": "Snagr",
+  "description": "Download videos and audio instantly",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0A0A0A",
+  "theme_color": "#FF3B5C",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml"
+    }
+  ]
+}
