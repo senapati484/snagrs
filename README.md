@@ -1,36 +1,33 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Snagr 🎬
 
-## Getting Started
+Download videos & audio from YouTube, Instagram, TikTok, Twitter, and Reddit. Paste a link, pick MP4 or MP3, done.
 
-First, run the development server:
+## Stack
+
+Next.js 14 · TypeScript · Zustand · Tailwind CSS · Vercel
+
+## Supported Platforms
+
+YouTube (up to 720p), Instagram Reels, TikTok, Twitter/X, Reddit
+
+## Run Locally
 
 ```bash
+npm install
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## Deploy
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+Push to GitHub → Import to Vercel → Deploy.
+No environment variables required for basic usage.
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Architecture
 
-## Learn More
+All download logic runs in Next.js API routes.
+No external servers or binaries required.
+The browser downloads directly from platform CDNs.
 
-To learn more about Next.js, take a look at the following resources:
+## Legal
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+For personal use only. Respect copyright and platform ToS.
