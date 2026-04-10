@@ -1,134 +1,235 @@
-import type { DownloadResult, DownloadFormat } from '@/types';
+import type { DownloadResult, DownloadFormat, QualityOption } from '@/types';
 import type { SnagError } from '@/types';
-import { generateFilename, detectPlatform } from '@/lib/utils';
+import { generateFilename } from '@/lib/utils';
 
 function extractTweetId(url: string): string {
   try {
     const parsedUrl = new URL(url);
     const pathParts = parsedUrl.pathname.split('/').filter(Boolean);
-    return pathParts[pathParts.length - 1] || '';
+    // Handle /user/status/TWEET_ID format
+    const statusIdx = pathParts.indexOf('status');
+    if (statusIdx !== -1 && pathParts[statusIdx + 1]) {
+      return pathParts[statusIdx + 1].split('?')[0];
+    }
+    // Fallback: last numeric segment
+    const numeric = pathParts.reverse().find((p) => /^\d+$/.test(p));
+    return numeric || '';
   } catch {
     return '';
   }
 }
 
+interface FxTwitterVariant {
+  url?: string;
+  content_type?: string;
+  bitrate?: number;
+  type?: string;
+  height?: number;
+  width?: number;
+}
+
+interface FxTwitterMedia {
+  type?: string;
+  url?: string;
+  thumbnail_url?: string;
+  variants?: FxTwitterVariant[];
+  video_info?: {
+    variants?: FxTwitterVariant[];
+  };
+}
+
+interface FxTwitterResponse {
+  code?: number;
+  message?: string;
+  tweet?: {
+    media?: {
+      videos?: FxTwitterMedia[];
+      all?: FxTwitterMedia[];
+    };
+    video?: {
+      url?: string;
+      variants?: FxTwitterVariant[];
+    };
+  };
+}
+
 export async function extractTwitter(
   url: string,
-  format: DownloadFormat
+  format: DownloadFormat,
+  quality?: string
 ): Promise<DownloadResult> {
+  const tweetId = extractTweetId(url);
+
+  if (!tweetId) {
+    throw { message: 'Invalid Twitter/X URL' } as SnagError;
+  }
+
   try {
-    const tweetId = extractTweetId(url);
-    
-    if (!tweetId) {
-      throw { message: 'Invalid Twitter URL' } as SnagError;
-    }
-
-    const headers = {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-    };
-
-    // Try 1: Mobile Twitter page
-    const mobileUrl = `https://mobile.twitter.com/i/status/${tweetId}`;
-    const mobileRes = await fetch(mobileUrl, { headers });
-    
     let downloadUrl: string | undefined;
-    
-    if (mobileRes.ok) {
-      const html = await mobileRes.text();
-      
-      // Look for video data in JSON
-      const jsonMatch = html.match(/JSON\.parse\(decodeURIComponent\("([^"]+)"\)\)/);
-      if (jsonMatch) {
-        try {
-          const decoded = decodeURIComponent(jsonMatch[1].replace(/\\"/g, '"'));
-          const data = JSON.parse(decoded);
-          
-          if (data?.data?.tweetResult?.result?.legacy?.extended_entities?.media) {
-            const media = data.data.tweetResult.result.legacy.extended_entities.media;
-            for (const m of media) {
-              if (m.type === 'video' || m.type === 'animated_gif') {
-                const variants = m.video_info?.variants || [];
-                const mp4s = variants.filter((v: Record<string, unknown>) => (v as Record<string, string>).content_type?.includes('mp4'));
-                if (mp4s.length > 0) {
-                  mp4s.sort((a: Record<string, unknown>, b: Record<string, unknown>) => ((b.bitrate as number) ?? 0) - ((a.bitrate as number) ?? 0));
-                  downloadUrl = (mp4s[0] as Record<string, unknown>).url as string;
+    let availableQualities: QualityOption[] = [];
+
+    // Strategy 1: Use fxtwitter API (most reliable)
+    try {
+      const fxRes = await fetch(`https://api.fxtwitter.com/status/${tweetId}`, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (compatible; Snagr/1.0)',
+          Accept: 'application/json',
+        },
+      });
+
+      if (fxRes.ok) {
+        const data = (await fxRes.json()) as FxTwitterResponse;
+        const tweet = data?.tweet;
+
+        if (tweet) {
+          // Check for video in media.videos
+          const videos = tweet.media?.videos;
+          if (videos && videos.length > 0) {
+            const video = videos[0];
+
+            // Extract variants with quality info
+            if (video.video_info?.variants) {
+              availableQualities = video.video_info.variants
+                .filter((v: FxTwitterVariant) => v.content_type?.includes('video/mp4'))
+                .map((v: FxTwitterVariant, i: number) => ({
+                  label: v.height ? `${v.height}p` : `Quality ${i + 1}`,
+                  value: i.toString(),
+                  height: v.height,
+                  bitrate: v.bitrate,
+                }))
+                .sort((a: { height?: number }, b: { height?: number }) => (b.height || 0) - (a.height || 0));
+            }
+
+            if (video.url) {
+              downloadUrl = video.url;
+            }
+          }
+
+          // Check for video in media.all
+          if (!downloadUrl && tweet.media?.all) {
+            for (const media of tweet.media.all) {
+              if (media.type === 'video' || media.type === 'gif') {
+                if (media.url) {
+                  downloadUrl = media.url;
                   break;
                 }
               }
             }
           }
-        } catch {}
-      }
-      
-      // Direct video_url regex
-      if (!downloadUrl) {
-        const videoMatch = html.match(/"video_url"\s*:\s*"([^"]+)"/);
-        if (videoMatch) {
-          downloadUrl = videoMatch[1].replace(/\\u0026/g, '&');
         }
       }
+    } catch {
+      // fxtwitter failed, try next strategy
     }
-    
-    // Try 2: Regular twitter.com page
-    if (!downloadUrl) {
-      const pageRes = await fetch(url, { headers });
-      
-      if (pageRes.ok) {
-        const html = await pageRes.text();
-        
-        // Try to find media details in script data
-        const mediaMatch = html.match(/"mediaDetails"\s*:\s*(\[[\s\S]*?\])/);
-        if (mediaMatch) {
-          try {
-            const mediaDetails = JSON.parse(mediaMatch[1]);
-            const videoMedia = mediaDetails.find((m: Record<string, unknown>) => m.type === 'video' || m.type === 'animated_gif');
-            if (videoMedia) {
-              const variants = (videoMedia as Record<string, unknown>).video_info?.variants || [];
-              const mp4s = (variants as Record<string, unknown>[]).filter((v: Record<string, unknown>) => (v as Record<string, string>).content_type?.includes('mp4'));
-              if (mp4s.length > 0) {
-                mp4s.sort((a: Record<string, unknown>, b: Record<string, unknown>) => ((b.bitrate as number) ?? 0) - ((a.bitrate as number) ?? 0));
-                downloadUrl = (mp4s[0] as Record<string, unknown>).url as string;
-              }
-            }
-          } catch {}
-        }
-      }
-    }
-    
-    // Try 3: Fxtwitter / vxtwitter alternative (redirects work)
+
+    // Strategy 2: Use vxtwitter (alternative)
     if (!downloadUrl) {
       try {
-        const altUrl = `https://fxtwitter.com/i/status/${tweetId}`;
-        const altRes = await fetch(altUrl, { 
-          headers,
-          redirect: 'follow'
-        });
-        
-        if (altRes.ok) {
-          const html = await altRes.text();
-          const videoMatch = html.match(/"video_url"\s*:\s*"([^"]+)"/);
-          if (videoMatch) {
-            downloadUrl = videoMatch[1].replace(/\\u0026/g, '&');
+        const vxRes = await fetch(
+          `https://api.vxtwitter.com/status/${tweetId}`,
+          {
+            headers: {
+              'User-Agent': 'Mozilla/5.0 (compatible; Snagr/1.0)',
+              Accept: 'application/json',
+            },
+          }
+        );
+
+        if (vxRes.ok) {
+          const data = (await vxRes.json()) as FxTwitterResponse;
+          const tweet = data?.tweet;
+
+          if (tweet?.media?.videos && tweet.media.videos.length > 0) {
+            const video = tweet.media.videos[0];
+            if (video.url) {
+              downloadUrl = video.url;
+            }
           }
         }
-      } catch {}
+      } catch {
+        // vxtwitter failed too
+      }
     }
-    
+
+    // Strategy 3: Twitter syndication API
     if (!downloadUrl) {
-      throw { message: 'No video found in this tweet. Text-only tweets cannot be downloaded.' } as SnagError;
+      try {
+        const syndicationUrl = `https://cdn.syndication.twimg.com/tweet-result?id=${tweetId}&lang=en&features=tfw_timeline_list:;tfw_follower_count_sunset:true;tfw_tweet_edit_backend:on;tfw_refsrc_session:on;tfw_fosnr_soft_interventions_enabled:on;tfw_show_birdwatch_pivots_enabled:on;tfw_show_business_verified_badge:on;tfw_duplicate_scribes_to_settings:on;tfw_use_profile_image_shape_enabled:on;tfw_show_blue_verified_badge:on;tfw_legacy_timeline_sunset:true;tfw_show_gov_verified_badge:on;tfw_show_business_affiliate_badge:on;tfw_tweet_edit_frontend:on`;
+        const synRes = await fetch(syndicationUrl, {
+          headers: {
+            'User-Agent':
+              'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          },
+        });
+
+        if (synRes.ok) {
+          const data = await synRes.json();
+          const mediaDetails = data?.mediaDetails;
+
+          if (Array.isArray(mediaDetails)) {
+            for (const media of mediaDetails) {
+              if (
+                media.type === 'video' ||
+                media.type === 'animated_gif'
+              ) {
+                const variants = media.video_info?.variants || [];
+                const mp4Variants = variants.filter(
+                  (v: FxTwitterVariant) =>
+                    v.content_type?.includes('video/mp4')
+                );
+
+                if (mp4Variants.length > 0) {
+                  availableQualities = mp4Variants
+                    .map((v: FxTwitterVariant, i: number) => ({
+                      label: v.height ? `${v.height}p` : `Quality ${i + 1}`,
+                      value: i.toString(),
+                      height: v.height,
+                      bitrate: v.bitrate,
+                    }))
+                    .sort((a: { height?: number }, b: { height?: number }) => (b.height || 0) - (a.height || 0));
+
+                  mp4Variants.sort(
+                    (a: FxTwitterVariant, b: FxTwitterVariant) =>
+                      (b.bitrate || 0) - (a.bitrate || 0)
+                  );
+                  downloadUrl = mp4Variants[0].url;
+                  break;
+                }
+              }
+            }
+          }
+        }
+      } catch {
+        // syndication failed too
+      }
     }
-    
+
+    if (!downloadUrl) {
+      throw {
+        message:
+          'No video found in this tweet. Make sure the tweet contains a video and is public.',
+      } as SnagError;
+    }
+
     return {
       downloadUrl,
       filename: generateFilename('twitter', format),
       format,
-      platform: detectPlatform(url),
+      platform: 'twitter',
+      quality: quality || 'auto',
+      availableQualities: availableQualities.length > 0 ? availableQualities : [{ label: 'Best', value: '0' }],
     };
   } catch (error) {
-    if ((error as SnagError).message) {
+    if (
+      error &&
+      typeof error === 'object' &&
+      'message' in error &&
+      typeof (error as SnagError).message === 'string'
+    ) {
       throw error;
     }
-    throw { message: 'No video found in this tweet. Text-only tweets cannot be downloaded.' } as SnagError;
+    throw {
+      message: 'Could not extract video from this tweet.',
+    } as SnagError;
   }
 }

@@ -36,7 +36,7 @@ export async function POST(request: NextRequest) {
 
   try {
     const body = await request.json();
-    const { url, format } = body;
+    const { url, format, quality } = body;
 
     if (!url || typeof url !== 'string') {
       return NextResponse.json(
@@ -60,7 +60,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const result = await resolveDownload({ url, format });
+    const result = await resolveDownload({ url, format, quality });
     return NextResponse.json(result, { headers: corsHeaders });
   } catch (error) {
     console.error('Download error:', error);

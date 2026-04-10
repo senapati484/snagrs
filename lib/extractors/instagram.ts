@@ -1,148 +1,104 @@
-import type { DownloadResult, DownloadFormat } from '@/types';
+import { instagramGetUrl } from 'instagram-url-direct';
+import type { DownloadResult, DownloadFormat, QualityOption } from '@/types';
 import type { SnagError } from '@/types';
-import { generateFilename, detectPlatform } from '@/lib/utils';
+import { generateFilename } from '@/lib/utils';
 
-function extractShortcode(url: string): string {
-  try {
-    const parsedUrl = new URL(url);
-    const pathParts = parsedUrl.pathname.split('/').filter(Boolean);
-    const shortcode = pathParts.find(p => p && !['p', 'reels', 'tv'].includes(p.toLowerCase()));
-    return shortcode || pathParts[pathParts.length - 1] || '';
-  } catch {
-    return '';
-  }
+interface InstagramUrlData {
+  url_list: string[];
+  thumbnail?: string;
+  original?: string[];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  results_number?: any;
 }
 
 export async function extractInstagram(
   url: string,
-  format: DownloadFormat
+  format: DownloadFormat,
+  quality?: string
 ): Promise<DownloadResult> {
   try {
-    const shortcode = extractShortcode(url);
-    
-    if (!shortcode) {
-      throw { message: 'Invalid Instagram URL' } as SnagError;
+    // Use instagram-url-direct package as primary method
+    const data: InstagramUrlData = await instagramGetUrl(url);
+
+    if (
+      !data ||
+      data.results_number === 0 ||
+      !data.url_list ||
+      data.url_list.length === 0
+    ) {
+      throw {
+        message:
+          'Could not extract Instagram video. Make sure the post is public and contains a video.',
+      } as SnagError;
     }
 
-    const headers = {
-      'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1',
-      'Accept-Language': 'en-US,en;q=0.9',
+    // Build quality options from url_list
+    // Instagram typically provides multiple quality versions
+    const availableQualities: QualityOption[] = [];
+
+    // The url_list usually has: [HD version, SD version, ...] or similar
+    // We need to classify them based on URL patterns or position
+    data.url_list.forEach((downloadUrl: string, index: number) => {
+      // Higher quality URLs typically have higher resolution indicators
+      // or appear earlier in the list
+      const heightLabels = ['1080', '720', '480', '360', '240'];
+      let foundQuality = false;
+
+      for (const h of heightLabels) {
+        if (downloadUrl.includes(`${h}x`) || downloadUrl.includes(`_${h}.mp4`)) {
+          availableQualities.push({
+            label: `${h}p`,
+            value: index.toString(),
+            height: parseInt(h),
+          });
+          foundQuality = true;
+          break;
+        }
+      }
+
+      if (!foundQuality) {
+        // Default labeling based on index position
+        const defaultQualities = ['720p', '480p', '360p', '240p'];
+        availableQualities.push({
+          label: defaultQualities[Math.min(index, defaultQualities.length - 1)] || 'Unknown',
+          value: index.toString(),
+        });
+      }
+    });
+
+    // Prefer the first URL in the list (usually the best quality)
+    const downloadUrl = data.url_list[0];
+
+    if (!downloadUrl || typeof downloadUrl !== 'string') {
+      throw {
+        message: 'Could not extract a valid download URL from Instagram.',
+      } as SnagError;
+    }
+
+    return {
+      downloadUrl,
+      filename: generateFilename('instagram', format),
+      format,
+      platform: 'instagram',
+      quality: quality || 'auto',
+      availableQualities: availableQualities.length > 0 ? availableQualities : [{ label: 'Best', value: '0' }],
     };
-
-    // Try 1: oEmbed API
-    try {
-      const oembedUrl = `https://www.instagram.com/oembed/?url=${encodeURIComponent(url)}`;
-      const oembedRes = await fetch(oembedUrl, { headers });
-      
-      if (oembedRes.ok) {
-        const oembedData = await oembedRes.json();
-        if (oembedData.is_video && oembedData.thumbnail_url) {
-          return {
-            downloadUrl: oembedData.thumbnail_url,
-            filename: generateFilename('instagram', format),
-            format,
-            platform: detectPlatform(url),
-          };
-        }
-      }
-    } catch {}
-
-    // Try 2: Mobile web scraping
-    const mobileUrl = `https://www.instagram.com/p/${shortcode}/?__a=1&__d=dis`;
-    const mobileRes = await fetch(mobileUrl, { headers });
-    
-    if (mobileRes.ok) {
-      try {
-        const contentType = mobileRes.headers.get('content-type') || '';
-        if (contentType.includes('application/json')) {
-          const data = await mobileRes.json();
-          const media = data?.graphql?.shortcode_media || data?.data?.shortcode_media;
-          
-          if (media) {
-            if (media.video_url) {
-              return {
-                downloadUrl: media.video_url,
-                filename: generateFilename('instagram', format),
-                format,
-                platform: detectPlatform(url),
-              };
-            }
-            
-            // Check carousel
-            if (media.edge_sidecar_to_children?.edges) {
-              for (const edge of media.edge_sidecar_to_children.edges) {
-                if (edge.node.is_video && edge.node.video_url) {
-                  return {
-                    downloadUrl: edge.node.video_url,
-                    filename: generateFilename('instagram', format),
-                    format,
-                    platform: detectPlatform(url),
-                  };
-                }
-              }
-            }
-          }
-        }
-      } catch {}
-    }
-
-    // Try 3: Regular page HTML scraping
-    const pageRes = await fetch(url, { headers });
-    
-    if (pageRes.ok) {
-      const html = await pageRes.text();
-      
-      // Look for JSON-LD
-      const jsonLdMatch = html.match(/<script type="application\/ld\+json">([\s\S]*?)<\/script>/);
-      if (jsonLdMatch) {
-        try {
-          const jsonLd = JSON.parse(jsonLdMatch[1]);
-          if (jsonLd.video?.contentUrl) {
-            return {
-              downloadUrl: jsonLd.video.contentUrl,
-              filename: generateFilename('instagram', format),
-              format,
-              platform: detectPlatform(url),
-            };
-          }
-        } catch {}
-      }
-      
-      // Look for sharedData
-      const sharedDataMatch = html.match(/window\._sharedData\s*=\s*({[\s\S]*?});/);
-      if (sharedDataMatch) {
-        try {
-          const sharedData = JSON.parse(sharedDataMatch[1]);
-          const media = sharedData?.entry_data?.PostPage?.[0]?.shortcode_media;
-          
-          if (media?.video_url) {
-            return {
-              downloadUrl: media.video_url,
-              filename: generateFilename('instagram', format),
-              format,
-              platform: detectPlatform(url),
-            };
-          }
-        } catch {}
-      }
-      
-      // Look for edge_media_to_parent_comment or other data
-      const edgeMatch = html.match(/"video_url"\s*:\s*"([^"]+)"/);
-      if (edgeMatch) {
-        return {
-          downloadUrl: edgeMatch[1].replace(/\\u0026/g, '&'),
-          filename: generateFilename('instagram', format),
-          format,
-          platform: detectPlatform(url),
-        };
+  } catch (error: unknown) {
+    if (
+      error &&
+      typeof error === 'object' &&
+      'message' in error &&
+      typeof (error as SnagError).message === 'string'
+    ) {
+      const msg = (error as SnagError).message;
+      // Pass through our own SnagErrors
+      if (msg.includes('Could not extract') || msg.includes('Instagram')) {
+        throw error;
       }
     }
-
-    throw { message: 'Could not extract Instagram video. Make sure the post is public.' } as SnagError;
-  } catch (error) {
-    if ((error as SnagError).message) {
-      throw error;
-    }
-    throw { message: 'Could not extract Instagram video. Make sure the post is public.' } as SnagError;
+    throw {
+      message:
+        'Could not extract Instagram video. Make sure the post is public and contains a video or reel.',
+    } as SnagError;
   }
 }

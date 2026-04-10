@@ -24,15 +24,15 @@ export async function resolveDownload(
 
   switch (platform) {
     case 'youtube':
-      return extractYouTube(request.url, request.format);
+      return extractYouTube(request.url, request.format, request.quality);
     case 'instagram':
-      return extractInstagram(request.url, request.format);
+      return extractInstagram(request.url, request.format, request.quality);
     case 'tiktok':
-      return extractTikTok(request.url, request.format);
+      return extractTikTok(request.url, request.format, request.quality);
     case 'twitter':
-      return extractTwitter(request.url, request.format);
+      return extractTwitter(request.url, request.format, request.quality);
     case 'reddit':
-      return extractReddit(request.url, request.format);
+      return extractReddit(request.url, request.format, request.quality);
     default:
       throw {
         message:

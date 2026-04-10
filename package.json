@@ -12,6 +12,7 @@
     "@hookform/resolvers": "^5.2.2",
     "clsx": "^2.1.1",
     "framer-motion": "^12.38.0",
+    "instagram-url-direct": "^2.0.7",
     "lucide-react": "^1.7.0",
     "next": "16.2.2",
     "react": "19.2.4",
@@ -19,7 +20,6 @@
     "react-hook-form": "^7.72.1",
     "tailwind-merge": "^3.5.0",
     "youtubei.js": "^17.0.1",
-    "ytdl-core": "^4.11.5",
     "zod": "^4.3.6",
     "zustand": "^5.0.12"
   },
