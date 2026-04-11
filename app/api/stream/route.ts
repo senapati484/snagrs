@@ -83,8 +83,8 @@ export async function GET(request: NextRequest) {
 
     if (!info.streaming_data) {
       innertubeInstance = null;
-      const status = info.playabilityStatus?.status || 'unknown';
-      const reason = info.playabilityStatus?.reason || 'No streaming data available';
+      const status = info.playability_status?.status || 'unknown';
+      const reason = info.playability_status?.reason || 'No streaming data available';
       return NextResponse.json(
         { error: `Could not fetch video. Status: ${status}. Reason: ${reason}` },
         { status: 404 }
@@ -124,7 +124,7 @@ export async function GET(request: NextRequest) {
       if (audioWithUrl.length > 0) {
         // We have audio-only format with direct URL!
         const bestAudio = audioWithUrl[0];
-        const response = await fetch(bestAudio.url);
+        const response = await fetch(bestAudio.url!);
         if (!response.ok) {
           throw new Error(`Audio fetch failed: ${response.status}`);
         }
@@ -152,7 +152,7 @@ export async function GET(request: NextRequest) {
           144: 'tiny',
         };
 
-        const qualityStr = heightToQuality[height] || 'best';
+        const qualityStr = height != null ? (heightToQuality[height] || 'best') : 'best';
 
         // Download the video+audio stream as buffer
         const videoData = await info.download({
