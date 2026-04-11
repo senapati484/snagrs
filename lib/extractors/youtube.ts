@@ -60,8 +60,8 @@ function getYouTubeQualities(info: any): { video: QualityOption[]; audio: Qualit
   const isAudio = (f: any) => f.height == null || f.height === 0;
 
   for (const fmt of allFormats) {
-    const itag = fmt.itag;
     const qualityLabel = fmt.quality_label;
+    const itag = fmt.itag;
 
     // Video formats have height
     if (isVideo(fmt) && qualityLabel) {
@@ -69,7 +69,7 @@ function getYouTubeQualities(info: any): { video: QualityOption[]; audio: Qualit
       if (!video.find((v) => v.height === height)) {
         video.push({
           label: qualityLabel,
-          value: qualityLabel, // Use quality label as value (e.g., "1080p")
+          value: qualityLabel,
           height,
         });
       }
@@ -77,12 +77,20 @@ function getYouTubeQualities(info: any): { video: QualityOption[]; audio: Qualit
 
     // Audio formats have no height (itags 140, 249, 250, 251, etc.)
     if (isAudio(fmt) && fmt.audio_bitrate) {
-      const bitrate = `${fmt.audio_bitrate}kbps`;
-      if (!audio.find((a) => a.bitrate === fmt.audio_bitrate)) {
+      // Map common audio itags to labels
+      let label = `${fmt.audio_bitrate}kbps`;
+      if (itag === 141) label = '256k AAC';
+      else if (itag === 140) label = '128k AAC';
+      else if (itag === 249) label = '96k Opus';
+      else if (itag === 250) label = '48k Opus';
+      else if (itag === 251) label = '160k Opus';
+
+      if (!audio.find((a) => a.bitrate === fmt.audio_bitrate && a.itag === itag)) {
         audio.push({
-          label: bitrate,
-          value: bitrate,
+          label,
+          value: label,
           bitrate: fmt.audio_bitrate,
+          itag,
         });
       }
     }
@@ -108,7 +116,6 @@ export async function extractYouTube(
 
   try {
     const yt = await getInnertube();
-    // Use getInfo() to get full info with deciphered URLs
     const info = await yt.getInfo(videoId);
 
     if (!info || !info.streaming_data) {
@@ -119,6 +126,8 @@ export async function extractYouTube(
 
     // Get available qualities
     const { video: availableVideo, audio: availableAudio } = getYouTubeQualities(info);
+
+    // For MP3, return audio qualities; for MP4, return video qualities
     const availableQualities: QualityOption[] = format === 'mp3' ? availableAudio : availableVideo;
 
     const filename = generateFilename('youtube', format);
@@ -128,7 +137,7 @@ export async function extractYouTube(
       filename,
       format,
       platform: 'youtube',
-      quality: quality || 'auto',
+      quality: quality || 'best',
       availableQualities,
       useStream: true,
       sourceUrl: `https://www.youtube.com/watch?v=${videoId}`,

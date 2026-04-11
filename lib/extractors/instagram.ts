@@ -75,6 +75,21 @@ export async function extractInstagram(
       } as SnagError;
     }
 
+    // For MP3 format, we need to stream via FFmpeg conversion
+    // Use the instagram-stream endpoint for audio extraction
+    if (format === 'mp3') {
+      return {
+        downloadUrl: downloadUrl,
+        filename: generateFilename('instagram', format),
+        format,
+        platform: 'instagram',
+        quality: quality || 'auto',
+        useStream: true, // Signal to use instagram-stream endpoint
+        sourceUrl: downloadUrl, // Original video URL for streaming
+        availableQualities: [{ label: 'Audio', value: 'best' }],
+      };
+    }
+
     return {
       downloadUrl,
       filename: generateFilename('instagram', format),

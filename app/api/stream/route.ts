@@ -1,18 +1,19 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { Innertube, Platform } from 'youtubei.js';
+import { spawn } from 'child_process';
 
 // Configure custom JS evaluator for deciphering YouTube signatures
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-Platform.shim.eval = async (data: any, env: any) => {
+Platform.shim.eval = (data: any, env: any) => {
   const properties: string[] = [];
   if (env.n) {
-    properties.push(`n: exportedVars.nFunction("${env.n}")`);
+    properties.push(`n: __YTOBJ__.nFunction("${env.n}")`);
   }
   if (env.sig) {
-    properties.push(`sig: exportedVars.sigFunction("${env.sig}")`);
+    properties.push(`sig: __YTOBJ__.sigFunction("${env.sig}")`);
   }
-  const code = `${data.output}\nreturn { ${properties.join(', ')} }`;
-  return new Function(code)();
+  const fullCode = `${data.output}\nreturn { ${properties.join(', ')} }`;
+  return new Function('__YTOBJ__', fullCode)(env);
 };
 
 // Reuse Innertube instance
@@ -24,8 +25,6 @@ async function getInnertube(): Promise<Innertube> {
       lang: 'en',
       location: 'US',
       retrieve_player: true,
-      generate_session_locally: true,
-      enable_session_cache: false,
     });
   }
   return innertubeInstance;
@@ -72,18 +71,25 @@ export async function GET(request: NextRequest) {
 
   try {
     const yt = await getInnertube();
-    // Use getInfo() instead of getBasicInfo() to get deciphered URLs
     const info = await yt.getInfo(videoId);
 
-    if (!info || !info.streaming_data) {
+    if (!info) {
       innertubeInstance = null;
       return NextResponse.json(
-        { error: 'Could not fetch video. It may be private or age-restricted.' },
+        { error: 'Could not fetch video info. Please try again.' },
         { status: 404 }
       );
     }
 
-    const contentType = format === 'mp3' ? 'audio/mpeg' : 'video/mp4';
+    if (!info.streaming_data) {
+      innertubeInstance = null;
+      const status = info.playabilityStatus?.status || 'unknown';
+      const reason = info.playabilityStatus?.reason || 'No streaming data available';
+      return NextResponse.json(
+        { error: `Could not fetch video. Status: ${status}. Reason: ${reason}` },
+        { status: 404 }
+      );
+    }
 
     // Get all available formats
     const streamingData = info.streaming_data;
@@ -99,93 +105,151 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    // Helper: detect if format is video (has height) or audio (no height)
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const isVideo = (f: any) => f.height != null && f.height > 0;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const isAudio = (f: any) => f.height == null || f.height === 0;
-
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let targetFormat: any = null;
+    let stream;
+    let contentType = format === 'mp3' ? 'audio/mp4' : 'video/mp4';
 
     if (format === 'mp3') {
-      // For MP3 audio, get audio-only formats (itag 140, 249, 250, 251, etc.)
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const audioFormats = allFormats.filter((f: any) => isAudio(f));
+      // For MP3 audio, we need audio-only stream
+      // YouTube doesn't have pure MP3 - audio is in m4a (aac) or webm (opus) containers
 
-      if (audioFormats.length === 0) {
-        return NextResponse.json(
-          { error: 'No audio format available for this video.' },
-          { status: 404 }
-        );
-      }
+      // Get audio-only formats from adaptive_formats
+      const adaptiveFormats = info.streaming_data?.adaptive_formats || [];
+      const audioFormats = adaptiveFormats
+        .filter((f: any) => !f.height || f.height === 0)
+        .sort((a: any, b: any) => (b.audio_bitrate || 0) - (a.audio_bitrate || 0));
 
-      // Sort by itag (higher = better quality, 251 = best audio)
-      audioFormats.sort((a, b) => (b.itag || 0) - (a.itag || 0));
+      // Check if we have audio formats with direct URLs
+      const audioWithUrl = audioFormats.filter((f: any) => f.url);
 
-      if (quality === 'best' || quality === 'auto') {
-        targetFormat = audioFormats[0];
+      if (audioWithUrl.length > 0) {
+        // We have audio-only format with direct URL!
+        const bestAudio = audioWithUrl[0];
+        const response = await fetch(bestAudio.url);
+        if (!response.ok) {
+          throw new Error(`Audio fetch failed: ${response.status}`);
+        }
+        stream = response.body;
+        contentType = 'audio/mp4';
       } else {
-        // Try to match specific bitrate preference (use itag as proxy)
-        const bitrateMap: Record<string, number> = {
-          '320kbps': 251,
-          '192kbps': 250,
-          '128kbps': 140,
+        // No direct URL - download video+audio and use FFmpeg to extract audio
+        const combinedFormats = allFormats
+          .filter((f: any) => f.height && f.height > 0)
+          .sort((a: any, b: any) => (b.height || 0) - (a.height || 0));
+
+        // Use smallest video quality to minimize download size
+        const lowestQuality = combinedFormats[combinedFormats.length - 1];
+        const height = lowestQuality.height;
+
+        const heightToQuality: Record<number, string> = {
+          4320: 'hd4320',
+          2160: 'hd2160',
+          1440: 'hd1440',
+          1080: 'hd1080',
+          720: 'hd720',
+          480: 'large',
+          360: 'medium',
+          240: 'small',
+          144: 'tiny',
         };
-        const targetItag = bitrateMap[quality] || audioFormats[0].itag;
-        targetFormat = audioFormats.find((f) => f.itag === targetItag) || audioFormats[0];
+
+        const qualityStr = heightToQuality[height] || 'best';
+
+        // Download the video+audio stream as buffer
+        const videoData = await info.download({
+          type: 'video+audio',
+          quality: qualityStr,
+          format: 'mp4',
+        });
+
+        // Convert video buffer to audio buffer using FFmpeg
+        const { Buffer } = await import('buffer');
+        const videoBuffer = Buffer.from(await new Response(videoData).arrayBuffer());
+
+        // Run FFmpeg to extract MP3
+        const { execSync } = await import('child_process');
+
+        // Create temp files
+        const inputPath = `/tmp/snagr-input-${Date.now()}.mp4`;
+        const outputPath = `/tmp/snagr-output-${Date.now()}.mp3`;
+
+        // Write input file
+        const { writeFileSync } = await import('fs');
+        writeFileSync(inputPath, videoBuffer);
+
+        // Run FFmpeg
+        execSync(`ffmpeg -i "${inputPath}" -vn -acodec libmp3lame -q:a 2 "${outputPath}" -y`);
+
+        // Read output
+        const { readFileSync, unlinkSync } = await import('fs');
+        const mp3Buffer = readFileSync(outputPath);
+
+        // Cleanup temp files
+        unlinkSync(inputPath);
+        unlinkSync(outputPath);
+
+        // Stream the MP3 buffer
+        stream = new ReadableStream({
+          start(controller) {
+            controller.enqueue(mp3Buffer);
+            controller.close();
+          }
+        });
+        contentType = 'audio/mpeg';
       }
     } else {
-      // For MP4 video, use combined video+audio when available
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      let videoFormats = allFormats.filter((f: any) => isVideo(f));
+      // For video (MP4), select by quality
+      // Parse quality from parameter (e.g., "1080p" -> 1080)
+      let targetHeight = 0;
+      if (quality && quality !== 'best' && quality !== 'auto') {
+        targetHeight = parseInt(quality.replace('p', ''));
+      }
 
-      if (videoFormats.length === 0) {
+      // Get combined formats (video+audio) sorted by height
+      // Filter: formats with height (video streams), sorted by quality
+      const combinedFormats = allFormats
+        .filter((f: any) => f.height && f.height > 0)
+        .sort((a: any, b: any) => (b.height || 0) - (a.height || 0));
+
+      if (combinedFormats.length === 0) {
         return NextResponse.json(
-          { error: 'No video format available for this video.' },
+          { error: 'No suitable video format found.' },
           { status: 404 }
         );
       }
 
-      // Sort by height descending (higher = better quality)
-      videoFormats.sort((a, b) => (b.height || 0) - (a.height || 0));
+      // Select format based on target height
+      let targetFormat = combinedFormats[0]; // Default to highest
 
-      if (quality === 'best' || quality === 'auto') {
-        targetFormat = videoFormats[0];
-      } else {
-        // Try to match specific height (e.g., "1080p" -> 1080, "720p" -> 720)
-        const targetHeight = parseInt(quality.replace('p', ''));
-        if (targetHeight) {
-          targetFormat = videoFormats.find((f) => f.height === targetHeight) || videoFormats[0];
-        } else {
-          targetFormat = videoFormats[0];
+      if (targetHeight > 0) {
+        // Find exact match or closest lower quality
+        const matched = combinedFormats.find((f: any) => f.height === targetHeight)
+          || combinedFormats.find((f: any) => f.height < targetHeight);
+        if (matched) {
+          targetFormat = matched;
         }
       }
-    }
 
-    if (!targetFormat) {
-      return NextResponse.json(
-        { error: 'Could not find a suitable format for this video.' },
-        { status: 404 }
-      );
-    }
+      // Map height to youtubei.js quality string
+      const heightToQuality: Record<number, string> = {
+        4320: 'hd4320',
+        2160: 'hd2160',
+        1440: 'hd1440',
+        1080: 'hd1080',
+        720: 'hd720',
+        480: 'large',
+        360: 'medium',
+        240: 'small',
+        144: 'tiny',
+      };
 
-    // Use youtubei.js built-in download
-    let stream;
-    if (format === 'mp3') {
-      // For audio, use type 'audio' which works with any quality
+      const qualityStr = targetFormat.height
+        ? heightToQuality[targetFormat.height] || 'best'
+        : 'best';
+
       stream = await info.download({
-        type: 'audio' as const,
-        format: 'any' as const,
-      });
-    } else {
-      // For video, use 'video+audio' with 'best' - this is the only way to get
-      // a combined stream that includes both video and audio
-      // Specifying specific quality at high resolution fails because those are separate tracks
-      stream = await info.download({
-        type: 'video+audio' as const,
-        quality: 'best' as const,
-        format: 'mp4' as const,
+        type: 'video+audio',
+        quality: qualityStr,
+        format: 'mp4',
       });
     }
 
@@ -196,7 +260,6 @@ export async function GET(request: NextRequest) {
       'Access-Control-Allow-Origin': '*',
     };
 
-    // stream from youtubei.js is a ReadableStream
     return new Response(stream as ReadableStream, {
       status: 200,
       headers: responseHeaders,

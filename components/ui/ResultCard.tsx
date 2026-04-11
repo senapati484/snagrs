@@ -21,12 +21,23 @@ export function ResultCard({ result, onReset }: ResultCardProps) {
     let downloadHref: string;
 
     if (result.useStream && result.sourceUrl) {
-      // Use streaming endpoint (YouTube) — streams directly via youtubei.js
-      const streamUrl = new URL('/api/stream', window.location.origin);
-      streamUrl.searchParams.set('url', result.sourceUrl);
-      streamUrl.searchParams.set('filename', result.filename);
-      streamUrl.searchParams.set('format', result.format);
-      streamUrl.searchParams.set('quality', selectedQuality);
+      // Use streaming endpoint — streams with FFmpeg conversion for audio
+      let streamUrl: URL;
+      if (result.platform === 'instagram') {
+        // Instagram: use dedicated FFmpeg conversion endpoint
+        const url = new URL('/api/instagram-stream', window.location.origin);
+        url.searchParams.set('url', result.sourceUrl);
+        url.searchParams.set('filename', result.filename);
+        streamUrl = url;
+      } else {
+        // YouTube: streams directly via youtubei.js
+        const url = new URL('/api/stream', window.location.origin);
+        url.searchParams.set('url', result.sourceUrl);
+        url.searchParams.set('format', result.format);
+        url.searchParams.set('quality', selectedQuality);
+        url.searchParams.set('filename', result.filename);
+        streamUrl = url;
+      }
       downloadHref = streamUrl.toString();
     } else {
       // Use proxy endpoint (other platforms)

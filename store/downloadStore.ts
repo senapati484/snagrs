@@ -12,12 +12,14 @@ import { generateId } from '@/lib/utils';
 interface DownloadStore {
   url: string;
   format: DownloadFormat;
+  quality: string;
   status: DownloadStatus;
   result: DownloadResult | null;
   error: SnagError | null;
   history: HistoryItem[];
   setUrl: (url: string) => void;
   setFormat: (format: DownloadFormat) => void;
+  setQuality: (quality: string) => void;
   reset: () => void;
   clearHistory: () => void;
   startDownload: () => Promise<void>;
@@ -27,8 +29,9 @@ export const useDownloadStore = create<DownloadStore>()(
   persist(
     (set, get) => ({
       url: '',
-      format: 'mp4',
-      status: 'idle',
+      format: 'mp4' as DownloadFormat,
+      quality: 'best',
+      status: 'idle' as DownloadStatus,
       result: null,
       error: null,
       history: [],
@@ -36,6 +39,8 @@ export const useDownloadStore = create<DownloadStore>()(
       setUrl: (url: string) => set({ url }),
 
       setFormat: (format: DownloadFormat) => set({ format }),
+
+      setQuality: (quality: string) => set({ quality }),
 
       reset: () =>
         set({
@@ -47,15 +52,15 @@ export const useDownloadStore = create<DownloadStore>()(
       clearHistory: () => set({ history: [] }),
 
       startDownload: async () => {
-        const { url, format } = get();
-        
+        const { url, format, quality } = get();
+
         set({ status: 'loading', error: null, result: null });
 
         try {
           const response = await fetch('/api/download', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ url, format }),
+            body: JSON.stringify({ url, format, quality }),
           });
 
           const data = await response.json();
@@ -101,6 +106,7 @@ export const useDownloadStore = create<DownloadStore>()(
       name: 'snagr-store',
       partialize: (state) => ({
         format: state.format,
+        quality: state.quality,
         history: state.history,
       }),
     }

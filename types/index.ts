@@ -18,6 +18,7 @@ export interface QualityOption {
   value: string;
   height?: number;
   bitrate?: number;
+  itag?: number;
 }
 
 export interface DownloadRequest {
